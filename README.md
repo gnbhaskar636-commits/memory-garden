@@ -67,11 +67,12 @@ local dev, since the app's data and identity both live there now.
 
 ## Database
 
-Schema lives in `migrations/*.sql`, applied via `npm run db:migrate` (also
-run automatically as part of `npm run build`) against whatever
-`DATABASE_URL` points at. There's no local-fallback auto-apply anymore —
-run the command yourself after `supabase start` or against a fresh hosted
-project.
+Schema lives in `migrations/*.sql`, applied explicitly via
+`npm run db:migrate` against whatever `DATABASE_URL` points at. Database
+migrations are intentionally separate from `npm run build`, so a deploy does
+not mutate the database or fail because build infrastructure cannot connect to
+it. Run the migration command after `supabase start`, against a fresh hosted
+project, or as a separately configured release step.
 
 Add new tables/columns as new ordered files (`0003_*.sql`, `0004_*.sql`, ...)
 — never edit an already-applied migration.
@@ -103,7 +104,7 @@ environment variables above, pointing at your Supabase project.
 | Command | Purpose |
 | --- | --- |
 | `npm run dev` | Start the dev server on port 8080 |
-| `npm run build` | Production build + apply pending migrations |
+| `npm run build` | Create the production build |
 | `npm run db:migrate` | Apply pending migrations against `DATABASE_URL` |
 | `npm run typecheck` | TypeScript check |
 | `npm run lint` | ESLint |

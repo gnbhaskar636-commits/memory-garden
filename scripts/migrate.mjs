@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /**
- * Deploy-time database migrator (node-postgres, `pg`).
+ * Explicit database migrator (node-postgres, `pg`).
  *
- * Runs during `npm run build` — on every Vercel deploy — applying pending files
- * in ../migrations to DATABASE_URL. Each file is applied in one transaction and
- * recorded in a `_migrations` table, so it runs once and is safe to re-run.
+ * Run with `npm run db:migrate` when provisioning or updating a database. It
+ * applies pending files in ../migrations to DATABASE_URL. Each file is applied
+ * in one transaction and recorded in a `_migrations` table, so it runs once and
+ * is safe to re-run.
  *
  * The read is non-recursive, so the opt-in auth schema under migrations/auth/
  * is not applied to an app that never asked for sign-in.
@@ -19,7 +20,13 @@ import { dirname, join } from "node:path";
 import pg from "pg";
 import { pendingMigrations } from "./migration-plan.mjs";
 
-process.loadEnvFile?.();
+if (typeof process.loadEnvFile === "function") {
+  try {
+    process.loadEnvFile();
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+}
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
   console.warn(

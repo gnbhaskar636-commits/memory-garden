@@ -1,7 +1,7 @@
 // @ts-check
 /**
  * Migration bookkeeping used by `scripts/migrate.mjs` (`readdir` over
- * `migrations/`, applied against `DATABASE_URL` during `npm run build`).
+ * `migrations/`, applied explicitly against `DATABASE_URL`).
  *
  * Applied files are keyed by BASENAME, not full path — a migration applies
  * once no matter which directory listing it came from.
