@@ -17,10 +17,13 @@ export type LookInput = { dx: number; dy: number };
 
 /**
  * First-person walk controls:
- * - Buttery-smooth movement damping and terrain height following
- * - Organic gentle head-bob (disabled when reducedMotion is active)
+ * - Smooth movement with arrow key and WASD support
+ * - Diagonal movement normalization so speed is consistent
+ * - Terrain height following and organic head-bob
  * - Shoreline boundary guidance around deep lake water
- * - Mobile dual-touch: left stick for movement, right surface for look
+ * - World boundary constraints with edge detection
+ * - Mobile joystick integration with pointer events
+ * - Pointer-lock error resilience
  */
 export function WorldControls({
   enabled,
@@ -39,10 +42,22 @@ export function WorldControls({
   const edgeNotified = useRef(false);
   const mouseLookActive = useRef(false);
 
+  // Diagonal speed correction factor so movement speed is consistent
+  // whether moving straight or diagonally. sqrt(2) ≈ 1.4142.
+  const DIAGONAL_SPEED_FACTOR = 1 / Math.sqrt(2);
+
   useEffect(() => {
     if (!enabled) return;
     const el = gl.domElement;
     const isTouch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
+
+    /**
+     * Maps a keyboard code to a movement direction sign.
+     * Positive = forward/right, Negative = backward/left.
+     */
+    function keySign(code: string, forward: number, backward: number, right: number, left: number) {
+      return keys.current[code] ? (code.includes("W") || code.includes("Up") ? forward : code.includes("S") || code.includes("Down") ? backward : code.includes("D") || code.includes("Right") ? right : left) : 0;
+    }
 
     function onKeyDown(e: KeyboardEvent) {
       keys.current[e.code] = true;
@@ -130,13 +145,24 @@ export function WorldControls({
       }
     }
 
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("keyup", onKeyUp);
+    // Reset look state if pointer lock is lost
+    function onPointerLockChange() {
+      mouseLookActive.current = document.pointerLockElement === el;
+    }
+
+    function onError(e: Event) {
+      // Pointer-lock errors should not disable movement - just log and continue
+      console.error("Pointer lock error:", e);
+      mouseLookActive.current = false;
+    }
+
     el.addEventListener("pointerdown", onPointerDown);
     el.addEventListener("pointerup", onPointerUp);
     el.addEventListener("pointercancel", onPointerUp);
     el.addEventListener("contextmenu", onContextMenu);
     el.addEventListener("pointermove", onMouseMove);
+    el.addEventListener("pointerlockchange", onPointerLockChange);
+    el.addEventListener("pointererror", onError);
     el.addEventListener("touchstart", onTouchStart, { passive: true });
     el.addEventListener("touchmove", onTouchMove, { passive: false });
     el.addEventListener("touchend", onTouchEnd);
@@ -156,6 +182,8 @@ export function WorldControls({
       el.removeEventListener("pointercancel", onPointerUp);
       el.removeEventListener("contextmenu", onContextMenu);
       el.removeEventListener("pointermove", onMouseMove);
+      el.removeEventListener("pointerlockchange", onPointerLockChange);
+      el.removeEventListener("pointererror", onError);
       el.removeEventListener("touchstart", onTouchStart);
       el.removeEventListener("touchmove", onTouchMove);
       el.removeEventListener("touchend", onTouchEnd);
@@ -185,22 +213,39 @@ export function WorldControls({
     const { yaw, pitch } = smoothLook.current;
     camera.rotation.set(pitch, yaw, 0);
 
-    let targetFwd = (keys.current["KeyW"] ? 1 : 0) + (keys.current["KeyS"] ? -1 : 0);
-    let targetStr = (keys.current["KeyD"] ? 1 : 0) + (keys.current["KeyA"] ? -1 : 0);
+    // --- Compute forward/right input from keyboard + joystick ---
+    // W/S: forward/backward, A/D: left/right, Arrow keys also supported
+    const w = keys.current["KeyW"] ? 1 : 0;
+    const s = keys.current["KeyS"] ? -1 : 0;
+    const a = keys.current["KeyA"] ? -1 : 0;
+    const d = keys.current["KeyD"] ? 1 : 0;
+
+    // Arrow key support
+    const wAr = keys.current["ArrowUp"] ? 1 : 0;
+    const sAr = keys.current["ArrowDown"] ? -1 : 0;
+    const aAr = keys.current["ArrowLeft"] ? -1 : 0;
+    const dAr = keys.current["ArrowRight"] ? 1 : 0;
+
+    const forward = (w + wAr + sAr + s) * DIAGONAL_SPEED_FACTOR;
+    const right = (a + aAr + dAr) * DIAGONAL_SPEED_FACTOR;
+
+    let targetFwd = forward;
+    let targetStr = right;
 
     if (moveInput?.current) {
       targetFwd += moveInput.current.y;
       targetStr += moveInput.current.x;
     }
 
+    // Normalize so diagonal movement is not faster than cardinal movement
     const inputLen = Math.hypot(targetFwd, targetStr);
     if (inputLen > 1) {
       targetFwd /= inputLen;
       targetStr /= inputLen;
     }
 
-    // Exponential damping gives the same acceleration and deceleration at
-    // different frame rates while keeping the input responsive.
+    // Exponential damping gives the same acceleration and deceleration
+    // at different frame rates while keeping the input responsive.
     const moveBlend = 1 - Math.exp(-MOVE_RESPONSE * frameDt);
     velocity.current.x = THREE.MathUtils.lerp(velocity.current.x, targetStr, moveBlend);
     velocity.current.z = THREE.MathUtils.lerp(velocity.current.z, targetFwd, moveBlend);
@@ -212,8 +257,8 @@ export function WorldControls({
       const cos = Math.cos(yaw);
       const sp = SPEED * frameDt;
 
-      camera.position.x += (sin * velocity.current.z + cos * velocity.current.x) * sp;
-      camera.position.z += (-cos * velocity.current.z + sin * velocity.current.x) * sp;
+      camera.position.x += (sin * targetFwd + cos * targetStr) * sp;
+      camera.position.z += (-cos * targetFwd + sin * targetStr) * sp;
 
       // Soft repulsion from deep lake center at (33, 0)
       const lakeDist = Math.hypot(camera.position.x - 33, camera.position.z);
@@ -240,8 +285,7 @@ export function WorldControls({
       const hitZ = beforeZ !== camera.position.z;
       const hitEdge = hitX || hitZ;
       if (hitEdge) {
-        // Keep the shared WASD/joystick velocity smooth, but remove the
-        // outward push so the player settles instead of jittering at the edge.
+        // Damp velocity so player settles at the edge instead of jittering
         const edgeDamping = Math.exp(-18 * frameDt);
         velocity.current.x *= edgeDamping;
         velocity.current.z *= edgeDamping;

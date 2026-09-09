@@ -1,14 +1,18 @@
-import { useRef, useState, type MutableRefObject, type PointerEvent as REPointerEvent } from "react";
+import { useRef, useState, useEffect, type MutableRefObject } from "react";
 import type { MoveInput } from "./WorldControls";
 
 const MAX_OFFSET = 46;
+const JOYSTICK_HIT_TEST_RADIUS = 8;
+
+type JoystickPointerEvent = PointerEvent & { currentTarget: HTMLDivElement };
 
 /**
  * Modern Futuristic Biophilic Joystick:
  * - Frosted glass outer ring with glowing concentric energy tracks
  * - Directional crosshair guidance
  * - Responsive glowing thumb knob with dynamic active feedback
- * - Non-blocking touch handling
+ * - Pointer-event support for mouse and touch
+ * - Works on both mobile and desktop without interfering with memory clicks
  */
 export function MobileJoystick({
   moveRef,
@@ -19,30 +23,43 @@ export function MobileJoystick({
   const [knob, setKnob] = useState({ x: 0, y: 0 });
   const [active, setActive] = useState(false);
 
-  function onStickDown(e: REPointerEvent<HTMLDivElement>) {
+  function onStickDown(e: PointerEvent) {
+    // Only activate if click/tap is inside the joystick area
+    const target = e.currentTarget as HTMLDivElement;
+    const rect = target.getBoundingClientRect();
+    const dx = e.clientX - rect.left - rect.width / 2;
+    const dy = e.clientY - rect.top - rect.height / 2;
+    const distanceFromCenter = Math.hypot(dx, dy);
+
+    // If clicked outside the joystick boundary, don't activate
+    if (distanceFromCenter > rect.width / 2 - JOYSTICK_HIT_TEST_RADIUS) {
+      return;
+    }
+
     e.stopPropagation();
     e.preventDefault();
-    e.currentTarget.setPointerCapture(e.pointerId);
-    const rect = e.currentTarget.getBoundingClientRect();
+    target.setPointerCapture(e.pointerId);
+    const targetRect = target.getBoundingClientRect();
     origin.current = {
-      x: rect.left + rect.width / 2,
-      y: rect.top + rect.height / 2,
+      x: targetRect.left + targetRect.width / 2,
+      y: targetRect.top + targetRect.height / 2,
     };
     setActive(true);
     updateStick(e.clientX, e.clientY);
   }
-  function onStickMove(e: REPointerEvent<HTMLDivElement>) {
+  function onStickMove(e: PointerEvent) {
     if (!origin.current) return;
     e.stopPropagation();
     e.preventDefault();
     updateStick(e.clientX, e.clientY);
   }
-  function onStickUp(e: REPointerEvent<HTMLDivElement>) {
+  function onStickUp(e: PointerEvent) {
     e.stopPropagation();
     origin.current = null;
     setActive(false);
-    moveRef.current = { x: 0, y: 0 };
     setKnob({ x: 0, y: 0 });
+    // Reset move input to prevent stuck movement
+    moveRef.current = { x: 0, y: 0 };
   }
   function updateStick(cx: number, cy: number) {
     if (!origin.current) return;
@@ -53,8 +70,20 @@ export function MobileJoystick({
     const nx = (dx / len) * clamped;
     const ny = (dy / len) * clamped;
     setKnob({ x: nx, y: ny });
+    // x: left/right (-1 to 1), y: forward/backward (-1 to 1)
+    // Negate y so pushing forward moves the camera forward
     moveRef.current = { x: nx / MAX_OFFSET, y: -ny / MAX_OFFSET };
   }
+
+  // Clean up on unmount / re-render
+  useEffect(() => {
+    return () => {
+      origin.current = null;
+      setActive(false);
+      setKnob({ x: 0, y: 0 });
+      moveRef.current = { x: 0, y: 0 };
+    };
+  }, [moveRef]);
 
   return (
     <div

@@ -13,6 +13,7 @@ export function MemoryWorldScene({
   onHover,
   onSelect,
   moveInput,
+  memoryMoods,
 }: {
   memories: MemoryWorldMemory[];
   reducedMotion: boolean;
@@ -21,6 +22,7 @@ export function MemoryWorldScene({
   onHover: (c: MemoryWorldConfig | null) => void;
   onSelect: (c: MemoryWorldConfig) => void;
   moveInput: MutableRefObject<MoveInput>;
+  memoryMoods?: string[];
 }) {
   const configs = useMemo(() => buildWorldConfigs(memories), [memories]);
 
@@ -30,6 +32,7 @@ export function MemoryWorldScene({
       <WorldEnvironment
         reducedMotion={reducedMotion}
         memoryPositions={configs.map((c) => c.position)}
+        moods={memoryMoods}
       />
       {configs.map((config) => (
         <MemoryObject

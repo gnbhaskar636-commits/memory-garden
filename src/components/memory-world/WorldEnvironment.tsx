@@ -1,5 +1,5 @@
 import { Sky } from "@react-three/drei";
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, useEffect } from "react";
 import { useFrame } from "@react-three/fiber";
 import type { Mesh, Points } from "three";
 import * as THREE from "three";
@@ -523,9 +523,11 @@ function HomeLandmark({ reducedMotion }: { reducedMotion: boolean }) {
 export function WorldEnvironment({
   reducedMotion,
   memoryPositions = [],
+  moods = [],
 }: {
   reducedMotion: boolean;
   memoryPositions?: Vec3[];
+  moods?: string[];
 }) {
   return (
     <group>
@@ -569,8 +571,52 @@ export function WorldEnvironment({
 
       {/* Biome-aware environmental flora */}
       <EnvironmentVegetation reducedMotion={reducedMotion} memoryPositions={memoryPositions} />
+
+      {/* Mood-based subtle environment tint */}
+      {moods.length > 0 && (
+        <MoodTint reducedMotion={reducedMotion} mood={moods[0]} />
+      )}
     </group>
   );
+}
+
+/* ─── Mood-Based Environment Tint Component ──────────── */
+
+function MoodTint({ reducedMotion, mood }: { reducedMotion: boolean; mood?: string }) {
+  useEffect(() => {
+    if (reducedMotion) return;
+
+    const tinted = document.createElement("style");
+    tinted.textContent = `
+      :root {
+        --mood-tint: ${moodMatch(mood)};
+      }
+    `;
+    document.head.appendChild(tinted);
+    return () => {
+      document.head.removeChild(tinted);
+    };
+  }, [reducedMotion, mood]);
+
+  function moodMatch(m?: string): string {
+    if (!m) return "none";
+    const mLower = m.toLowerCase();
+    if (/peace|calm|reflect|quiet|still/.test(mLower)) {
+      return "rgba(139, 233, 252, 0.15)";
+    }
+    if (/joy|happy|excit|grateful|loved|celebrat/.test(mLower)) {
+      return "rgba(251, 191, 36, 0.15)";
+    }
+    if (/nostalgic|warm|golden|amber/.test(mLower)) {
+      return "rgba(251, 191, 36, 0.12)";
+    }
+    if (/thoughtful|cool|blue|serious/.test(mLower)) {
+      return "rgba(167, 227, 208, 0.15)";
+    }
+    return "none";
+  }
+
+  return null;
 }
 
 export function WorldLighting() {

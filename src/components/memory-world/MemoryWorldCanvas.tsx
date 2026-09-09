@@ -16,6 +16,11 @@ function useIsTouch() {
   return touch;
 }
 
+// Extract moods from memories for environment tinting
+function useMemoryMoods(memories: MemoryWorldMemory[]): string[] {
+  return memories.map((m) => m.mood || "").filter((m) => m);
+}
+
 export function MemoryWorldCanvas({
   memories,
   reducedMotion,
@@ -30,6 +35,7 @@ export function MemoryWorldCanvas({
   const { newIds, completeGrowth } = useNewMemoryIds(memories);
   const moveRef = useRef<MoveInput>({ x: 0, y: 0 });
   const isTouch = useIsTouch();
+  const memoryMoods = useMemoryMoods(memories);
 
   useEffect(() => {
     function onEdge(e: Event) {
@@ -70,6 +76,7 @@ export function MemoryWorldCanvas({
             onHover={setHovered}
             onSelect={onSelectConfig}
             moveInput={moveRef}
+            memoryMoods={memoryMoods}
           />
         </Suspense>
       </Canvas>
@@ -77,15 +84,15 @@ export function MemoryWorldCanvas({
       {/* Proximity / Hover Tooltip */}
       <MemoryTooltip config={hovered} />
 
-      {/* Mobile Virtual Navigation Joystick */}
-      {isTouch ? <MobileJoystick moveRef={moveRef} /> : null}
+      {/* Virtual Navigation Joystick - works on mobile and desktop */}
+      <MobileJoystick moveRef={moveRef} />
 
       {/* Bottom Controls Pill */}
       <div className="mw-hud">
         <span>
           {isTouch
             ? "🕹️ Stick to walk · Drag to look · Tap memory to open"
-            : "WASD to walk · Right-drag to look · Click a memory tree to open it"}
+            : "WASD / Arrow Keys / Joystick to walk · Drag to look · Click a memory to open"}
         </span>
       </div>
 
