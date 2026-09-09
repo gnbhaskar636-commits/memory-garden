@@ -24,9 +24,7 @@ export default defineConfig(({ command, isPreview }) => ({
     ...(command === "build" || isPreview
       ? [
           nitro({
-            // Set to your target: "vercel", "node-server", "cloudflare-pages",
-            // etc. See https://nitro.build/deploy for the full list.
-            preset: "vercel",
+            preset: "netlify",
           }),
         ]
       : []),

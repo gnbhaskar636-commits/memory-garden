@@ -130,9 +130,9 @@ async function createSql(): Promise<Sql> {
  * Get the shared, **server-only** SQL client, backed by `DATABASE_URL`.
  * Memoized — safe to call per request.
  *
- * Schema comes from `migrations/*.sql`, applied by `npm run build`
- * (`scripts/migrate.mjs`) or `supabase db push` — define tables there,
- * never inline in server functions.
+ * Schema comes from `migrations/*.sql`, applied with `npm run db:migrate`
+ * (`scripts/migrate.mjs`) or `supabase db push` — define tables there, never
+ * inline in server functions.
  */
 export function getSql(): Promise<Sql> {
   sqlPromise ??= createSql().catch((err) => {
