@@ -3,6 +3,7 @@ import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import viteReact from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { nitro } from "nitro/vite";
+import viteTsconfigPaths from "vite-tsconfig-paths";
 
 export default defineConfig(({ command, isPreview }) => ({
   server: {
@@ -19,6 +20,7 @@ export default defineConfig(({ command, isPreview }) => ({
   },
   resolve: { tsconfigPaths: true },
   plugins: [
+    viteTsconfigPaths(),
     tailwindcss(),
     tanstackStart(),
     ...(command === "build" || isPreview

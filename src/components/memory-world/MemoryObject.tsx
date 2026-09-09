@@ -111,13 +111,7 @@ export function MemoryObject({
   const hoverScale = reducedMotion ? 1 : hovered ? 1.02 : 1;
 
   // Enhanced aura opacity: favorite > hovered with photo > normal
-  const auraBaseOpacity = memory.favorite
-    ? 0.28
-    : isTreeWithPhoto && hovered
-      ? 0.35
-      : isTreeWithPhoto
-        ? 0.2
-        : 0.12;
+ 
 
   const visual =
     objectType === "TREE" ? (
