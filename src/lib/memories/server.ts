@@ -1,16 +1,8 @@
-/**
- * Server functions for memories + garden settings (server-only).
- *
- * Replaces the old localStorage-only store: every mutation now writes to
- * `memories` / `garden_settings` (see migrations/0002_memories.sql and
- * 0003_memory_analysis.sql), scoped to the authenticated user via
- * `authMiddleware`. Call these from `src/lib/memories/store.ts` (the
- * client-side cache / optimistic layer).
- */
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { getSql } from "@/lib/db";
 import { authMiddleware } from "@/lib/auth/middleware";
+import { createSupabaseServerClient } from "@/lib/auth/server";
 import { analyzeMemory } from "@/lib/ai/analyze.server";
 import { chatWithGarden, type ChatMessage } from "@/lib/ai/garden-chat.server";
 import { MOOD_MARKER } from "./mood";
@@ -27,10 +19,11 @@ const sentimentSchema = z.enum(["positive", "neutral", "negative"]);
 const draftSchema = z.object({
   title: z.string().trim().min(1).max(200),
   description: z.string().trim().max(4000),
-  date: z.string().min(1), // 'YYYY-MM-DD'
+  date: z.string().min(1),
   mood: moodSchema,
   location: z.string().trim().max(200),
   photo: z.string().max(10_000_000).nullable(),
+  photoPath: z.string().trim().max(1000).nullable(),
   favorite: z.boolean(),
   markerKind: markerKindSchema.optional(),
   tags: z.array(z.string().trim().min(1).max(40)).max(10),
@@ -49,6 +42,7 @@ interface MemoryRow {
   mood: string;
   location: string;
   photo: string | null;
+  photo_path: string | null;
   favorite: boolean;
   marker_kind: string;
   created_at: string;
@@ -69,7 +63,18 @@ function worldPositionFor(memory: MemoryWorldMemory) {
   return { x: position.x, z: position.z };
 }
 
-function rowToMemory(row: MemoryRow): Memory {
+async function signedPhotoUrl(path: string | null, fallback: string | null): Promise<string | null> {
+  if (!path) return fallback;
+  const supabase = createSupabaseServerClient();
+  const { data, error } = await supabase.storage.from("memory-photos").createSignedUrl(path, 60 * 60 * 24);
+  if (error || !data?.signedUrl) {
+    console.warn("[memory] could not sign photo URL", { code: error?.name ?? "unknown" });
+    return null;
+  }
+  return data.signedUrl;
+}
+
+async function rowToMemory(row: MemoryRow): Promise<Memory> {
   const fallback = worldPositionFor({
     id: row.id,
     title: row.title,
@@ -88,7 +93,8 @@ function rowToMemory(row: MemoryRow): Memory {
     date: row.date,
     mood: row.mood as Memory["mood"],
     location: row.location,
-    photo: row.photo,
+    photo: await signedPhotoUrl(row.photo_path, row.photo),
+    photoPath: row.photo_path,
     favorite: row.favorite,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -99,26 +105,30 @@ function rowToMemory(row: MemoryRow): Memory {
     secondaryEmotion: row.secondary_emotion,
     sentiment: row.sentiment as Memory["sentiment"],
     aiAnalyzed: row.ai_analyzed,
-    worldPosition: row.world_x == null || row.world_z == null
-      ? fallback
-      : { x: Number(row.world_x), z: Number(row.world_z) },
+    worldPosition:
+      row.world_x == null || row.world_z == null
+        ? fallback
+        : { x: Number(row.world_x), z: Number(row.world_z) },
   };
 }
+
+const memorySelect = `
+  id, title, description, date, mood, location, photo, photo_path, favorite,
+  marker_kind, created_at, updated_at, tags, emotion_intensity,
+  primary_emotion, secondary_emotion, sentiment, ai_analyzed, world_x, world_z
+`;
 
 export const listMemories = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .handler(async ({ context }) => {
     const sql = await getSql();
     const rows = await sql<MemoryRow>`
-                  select id, title, description, date, mood, location, photo, favorite,
-                    marker_kind, created_at, updated_at, tags, emotion_intensity,
-                    primary_emotion, secondary_emotion, sentiment, ai_analyzed,
-                    world_x, world_z
+      select ${sql.unsafe(memorySelect)}
       from memories
       where user_id = ${context.userId}
       order by date desc, created_at desc
     `;
-    const memories = rows.map(rowToMemory);
+    const memories = await Promise.all(rows.map(rowToMemory));
     for (const memory of memories) {
       const row = rows.find((candidate) => candidate.id === memory.id);
       if (row?.world_x == null || row.world_z == null) {
@@ -136,18 +146,6 @@ export const createMemory = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator(draftSchema.extend({ id: z.string().min(1) }))
   .handler(async ({ context, data }) => {
-    // Safe diagnostics: log type info without secrets
-    // context.userId should be a UUID string when auth is working
-    const userIdType = typeof context.userId;
-    // data.tags should be string[]
-    const tagsIsArray = Array.isArray(data.tags);
-    // data.photo is string | null - log whether it's present
-    const hasPhoto = data.photo != null;
-    if (hasPhoto) {
-      console.log(`[diag] createMemory: userIdType=${userIdType}, hasPhoto=true, tagsArray=${tagsIsArray}`);
-    } else {
-      console.log(`[diag] createMemory: userIdType=${userIdType}, hasPhoto=false, tagsArray=${tagsIsArray}`);
-    }
     const sql = await getSql();
     const { id } = data;
     const markerKind = data.markerKind ?? MOOD_MARKER[data.mood];
@@ -162,19 +160,18 @@ export const createMemory = createServerFn({ method: "POST" })
       secondaryEmotion: data.secondaryEmotion ?? undefined,
       sentiment: data.sentiment ?? undefined,
     });
+    const legacyPhoto = data.photo?.startsWith("data:") ? data.photo : null;
     const rows = await sql<MemoryRow>`
       insert into memories
-        (id, user_id, title, description, date, mood, location, photo, favorite, marker_kind,
+        (id, user_id, title, description, date, mood, location, photo, photo_path, favorite, marker_kind,
          tags, emotion_intensity, primary_emotion, secondary_emotion, sentiment, ai_analyzed,
          world_x, world_z)
       values
         (${id}, ${context.userId}, ${data.title}, ${data.description}, ${data.date},
-         ${data.mood}, ${data.location}, ${data.photo}, ${data.favorite}, ${markerKind},
+         ${data.mood}, ${data.location}, ${legacyPhoto}, ${data.photoPath}, ${data.favorite}, ${markerKind},
          ${data.tags}, ${data.emotionIntensity}, ${data.primaryEmotion}, ${data.secondaryEmotion},
-          ${data.sentiment}, ${data.aiAnalyzed}, ${worldPosition.x}, ${worldPosition.z})
-      returning id, title, description, date, mood, location, photo, favorite,
-                marker_kind, created_at, updated_at, tags, emotion_intensity,
-            primary_emotion, secondary_emotion, sentiment, ai_analyzed, world_x, world_z
+         ${data.sentiment}, ${data.aiAnalyzed}, ${worldPosition.x}, ${worldPosition.z})
+      returning ${sql.unsafe(memorySelect)}
     `;
     return rowToMemory(rows[0]!);
   });
@@ -186,6 +183,12 @@ export const updateMemory = createServerFn({ method: "POST" })
     const sql = await getSql();
     const { id, draft } = data;
     const markerKind = draft.markerKind ?? MOOD_MARKER[draft.mood];
+    const oldRows = await sql<{ photo_path: string | null }>`
+      select photo_path from memories where id = ${id} and user_id = ${context.userId} limit 1
+    `;
+    if (!oldRows[0]) throw new Error("Memory not found");
+    const oldPath = oldRows[0].photo_path;
+    const legacyPhoto = draft.photo?.startsWith("data:") ? draft.photo : null;
     const rows = await sql<MemoryRow>`
       update memories set
         title = ${draft.title},
@@ -193,7 +196,8 @@ export const updateMemory = createServerFn({ method: "POST" })
         date = ${draft.date},
         mood = ${draft.mood},
         location = ${draft.location},
-        photo = ${draft.photo},
+        photo = ${legacyPhoto},
+        photo_path = ${draft.photoPath},
         favorite = ${draft.favorite},
         marker_kind = ${markerKind},
         tags = ${draft.tags},
@@ -204,11 +208,18 @@ export const updateMemory = createServerFn({ method: "POST" })
         ai_analyzed = ${draft.aiAnalyzed},
         updated_at = now()
       where id = ${id} and user_id = ${context.userId}
-      returning id, title, description, date, mood, location, photo, favorite,
-                marker_kind, created_at, updated_at, tags, emotion_intensity,
-                primary_emotion, secondary_emotion, sentiment, ai_analyzed, world_x, world_z
+      returning ${sql.unsafe(memorySelect)}
     `;
     if (!rows[0]) throw new Error("Memory not found");
+
+    if (oldPath && oldPath !== draft.photoPath) {
+      try {
+        const supabase = createSupabaseServerClient();
+        await supabase.storage.from("memory-photos").remove([oldPath]);
+      } catch (error) {
+        console.warn("[memory] old photo cleanup failed", { code: error instanceof Error ? error.name : "unknown" });
+      }
+    }
     return rowToMemory(rows[0]);
   });
 
@@ -217,7 +228,18 @@ export const deleteMemory = createServerFn({ method: "POST" })
   .validator(z.object({ id: z.string().min(1) }))
   .handler(async ({ context, data }) => {
     const sql = await getSql();
+    const rows = await sql<{ photo_path: string | null }>`
+      select photo_path from memories where id = ${data.id} and user_id = ${context.userId} limit 1
+    `;
     await sql`delete from memories where id = ${data.id} and user_id = ${context.userId}`;
+    if (rows[0]?.photo_path) {
+      try {
+        const supabase = createSupabaseServerClient();
+        await supabase.storage.from("memory-photos").remove([rows[0].photo_path]);
+      } catch (error) {
+        console.warn("[memory] photo cleanup failed", { code: error instanceof Error ? error.name : "unknown" });
+      }
+    }
     return { ok: true };
   });
 
@@ -229,21 +251,12 @@ export const toggleFavoriteMemory = createServerFn({ method: "POST" })
     const rows = await sql<MemoryRow>`
       update memories set favorite = not favorite, updated_at = now()
       where id = ${data.id} and user_id = ${context.userId}
-      returning id, title, description, date, mood, location, photo, favorite,
-                marker_kind, created_at, updated_at, tags, emotion_intensity,
-                primary_emotion, secondary_emotion, sentiment, ai_analyzed, world_x, world_z
+      returning ${sql.unsafe(memorySelect)}
     `;
     if (!rows[0]) throw new Error("Memory not found");
     return rowToMemory(rows[0]);
   });
 
-/**
- * AI-analyze a draft memory before it's saved (see
- * `src/lib/ai/analyze.server.ts` for the provider + rule-based fallback).
- * Gated by `authMiddleware` purely to keep this from being an open,
- * unauthenticated way to spend an AI provider's quota — the result isn't
- * itself scoped to any stored data.
- */
 export const analyzeMemoryDraft = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator(
@@ -272,12 +285,23 @@ function rowToSettings(row: SettingsRow | undefined): GardenSettings | null {
   };
 }
 
-/** Deletes every memory belonging to the caller. Scoped by user_id — never a bulk delete-all. */
 export const clearMyMemories = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .handler(async ({ context }) => {
     const sql = await getSql();
+    const rows = await sql<{ photo_path: string | null }>`
+      select photo_path from memories where user_id = ${context.userId} and photo_path is not null
+    `;
     await sql`delete from memories where user_id = ${context.userId}`;
+    const paths = rows.map((row) => row.photo_path).filter((path): path is string => Boolean(path));
+    if (paths.length) {
+      try {
+        const supabase = createSupabaseServerClient();
+        await supabase.storage.from("memory-photos").remove(paths);
+      } catch (error) {
+        console.warn("[memory] bulk photo cleanup failed", { code: error instanceof Error ? error.name : "unknown" });
+      }
+    }
     return { ok: true };
   });
 
@@ -317,10 +341,6 @@ export const saveGardenSettings = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
-// ---------------------------------------------------------------------------
-// Time Machine reflections — "How do you feel about this memory today?"
-// ---------------------------------------------------------------------------
-
 export interface MemoryReflection {
   id: string;
   memoryId: string;
@@ -330,35 +350,20 @@ export interface MemoryReflection {
 
 export const saveMemoryReflection = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator(
-    z.object({
-      memoryId: z.string().min(1),
-      content: z.string().trim().min(1).max(2000),
-    }),
-  )
+  .validator(z.object({ memoryId: z.string().min(1), content: z.string().trim().min(1).max(2000) }))
   .handler(async ({ context, data }) => {
     const sql = await getSql();
-    // Ensure the memory belongs to the caller before inserting.
     const owned = await sql<{ id: string }>`
-      select id from memories
-      where id = ${data.memoryId} and user_id = ${context.userId}
-      limit 1
+      select id from memories where id = ${data.memoryId} and user_id = ${context.userId} limit 1
     `;
-    if (!owned[0]) {
-      throw new Error("Memory not found");
-    }
+    if (!owned[0]) throw new Error("Memory not found");
     const rows = await sql<{ id: string; memory_id: string; content: string; created_at: string }>`
       insert into memory_reflections (user_id, memory_id, content)
       values (${context.userId}, ${data.memoryId}, ${data.content})
       returning id, memory_id, content, created_at
     `;
     const row = rows[0]!;
-    return {
-      id: row.id,
-      memoryId: row.memory_id,
-      content: row.content,
-      createdAt: row.created_at,
-    } satisfies MemoryReflection;
+    return { id: row.id, memoryId: row.memory_id, content: row.content, createdAt: row.created_at } satisfies MemoryReflection;
   });
 
 export const listMemoryReflections = createServerFn({ method: "GET" })
@@ -369,66 +374,36 @@ export const listMemoryReflections = createServerFn({ method: "GET" })
     const memoryId = data?.memoryId;
     const rows = memoryId
       ? await sql<{ id: string; memory_id: string; content: string; created_at: string }>`
-          select id, memory_id, content, created_at
-          from memory_reflections
+          select id, memory_id, content, created_at from memory_reflections
           where user_id = ${context.userId} and memory_id = ${memoryId}
-          order by created_at desc
-          limit 20
+          order by created_at desc limit 20
         `
       : await sql<{ id: string; memory_id: string; content: string; created_at: string }>`
-          select id, memory_id, content, created_at
-          from memory_reflections
+          select id, memory_id, content, created_at from memory_reflections
           where user_id = ${context.userId}
-          order by created_at desc
-          limit 50
+          order by created_at desc limit 50
         `;
-    return rows.map(
-      (row) =>
-        ({
-          id: row.id,
-          memoryId: row.memory_id,
-          content: row.content,
-          createdAt: row.created_at,
-        }) satisfies MemoryReflection,
-    );
+    return rows.map((row) => ({ id: row.id, memoryId: row.memory_id, content: row.content, createdAt: row.created_at } satisfies MemoryReflection));
   });
-
-// ---------------------------------------------------------------------------
-// Talk to Your Garden — authenticated chat over the caller's memories only.
-// ---------------------------------------------------------------------------
-
 
 export const askGarden = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator(
     z.object({
       question: z.string().trim().min(1).max(1000),
-      history: z
-        .array(
-          z.object({
-            role: z.enum(["user", "assistant"]),
-            content: z.string().max(4000),
-          }),
-        )
-        .max(16)
-        .optional(),
+      history: z.array(z.object({ role: z.enum(["user", "assistant"]), content: z.string().max(4000) })).max(16).optional(),
     }),
   )
   .handler(async ({ context, data }) => {
     try {
       const sql = await getSql();
       const rows = await sql<MemoryRow>`
-              select id, title, description, date, mood, location, photo, favorite,
-                marker_kind, created_at, updated_at, tags, emotion_intensity,
-                primary_emotion, secondary_emotion, sentiment, ai_analyzed, world_x, world_z
-        from memories
+        select ${sql.unsafe(memorySelect)} from memories
         where user_id = ${context.userId}
-        order by date desc, created_at desc
-        limit 100
+        order by date desc, created_at desc limit 100
       `;
-      const memories = rows.map(rowToMemory);
-      const history = (data.history ?? []) as ChatMessage[];
-      return chatWithGarden(memories, data.question, history);
+      const memories = await Promise.all(rows.map(rowToMemory));
+      return chatWithGarden(memories, data.question, (data.history ?? []) as ChatMessage[]);
     } catch (error) {
       console.error("[chat] memory database unavailable", error);
       throw new Error("Garden memories are temporarily unavailable.");
