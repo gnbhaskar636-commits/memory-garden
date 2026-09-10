@@ -24,19 +24,19 @@ export interface Memory {
   date: string;
   mood: Mood;
   location: string;
+  /** Short-lived signed URL for the private Storage object, or null. */
   photo: string | null;
+  /** Stable private Storage object path used to keep the photo attached to the memory. */
+  photoPath: string | null;
   favorite: boolean;
   createdAt: string;
   updatedAt: string;
   markerKind: MarkerKind;
   tags: string[];
-  /** 1–10, user-set or AI-suggested. `null` until set. */
   emotionIntensity: number | null;
-  /** Set once `aiAnalyzed` is true — see src/lib/ai/analyze.server.ts. */
   primaryEmotion: string | null;
   secondaryEmotion: string | null;
   sentiment: Sentiment | null;
-  /** True once AI analysis has run at least once (even if it fell back to rules). */
   aiAnalyzed: boolean;
   worldPosition: { x: number; z: number };
 }
@@ -55,6 +55,7 @@ export interface MemoryDraft {
   mood: Mood;
   location: string;
   photo: string | null;
+  photoPath: string | null;
   favorite: boolean;
   markerKind?: MarkerKind;
   tags: string[];
