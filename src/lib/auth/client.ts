@@ -2,23 +2,13 @@ import { createBrowserClient } from "@supabase/ssr";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getSupabasePublicConfig } from "./public-config";
 
-/**
- * Supabase client for this React SPA (browser-side).
- *
- * OAuth uses an explicit PKCE callback route. We deliberately disable
- * automatic URL detection here so the OAuth code is exchanged exactly once
- * by `/auth/callback`, rather than once by the browser client and once by a
- * server-side callback.
- */
 let clientPromise: Promise<SupabaseClient | null> | null = null;
 
 export function getSupabaseBrowserClient(): Promise<SupabaseClient | null> {
   clientPromise ??= getSupabasePublicConfig().then((config) =>
     config
       ? createBrowserClient(config.url, config.anonKey, {
-          auth: {
-            detectSessionInUrl: false,
-          },
+          auth: { detectSessionInUrl: false },
         })
       : null,
   );
@@ -28,8 +18,6 @@ export function getSupabaseBrowserClient(): Promise<SupabaseClient | null> {
 export const authEnabled = true;
 
 function getOAuthCallbackUrl(): string {
-  // Production must never fall back to the Vite dev origin. Local development
-  // still uses the local origin so developers can run the same callback route.
   if (typeof window !== "undefined" && window.location.hostname === "memory-garden-theta.vercel.app") {
     return "https://memory-garden-theta.vercel.app/auth/callback";
   }
@@ -59,16 +47,48 @@ export async function signInEmail(email: string, password: string): Promise<void
   if (error) throw new Error(error.message);
 }
 
-/** Redirects to Google's consent screen via Supabase's built-in Google provider. */
 export async function signInGoogle(): Promise<void> {
   const supabase = await getSupabaseBrowserClient();
   if (!supabase) throw new Error("Sign-in is not configured");
   const { error } = await supabase.auth.signInWithOAuth({
     provider: "google",
-    options: {
-      redirectTo: getOAuthCallbackUrl(),
-    },
+    options: { redirectTo: getOAuthCallbackUrl() },
   });
+  if (error) throw new Error(error.message);
+}
+
+export async function uploadMemoryPhoto(file: File): Promise<{ path: string; signedUrl: string }> {
+  const supabase = await getSupabaseBrowserClient();
+  if (!supabase) throw new Error("Photo storage is not configured");
+
+  const { data: userData, error: userError } = await supabase.auth.getUser();
+  if (userError || !userData.user) throw new Error("You must be signed in to upload a photo.");
+
+  const extension = file.name.split(".").pop()?.toLowerCase() || "jpg";
+  const path = `${userData.user.id}/${crypto.randomUUID()}.${extension}`;
+  const { error: uploadError } = await supabase.storage.from("memory-photos").upload(path, file, {
+    cacheControl: "3600",
+    contentType: file.type || "image/jpeg",
+    upsert: false,
+  });
+  if (uploadError) throw new Error(uploadError.message);
+
+  const { data: signedData, error: signedError } = await supabase.storage
+    .from("memory-photos")
+    .createSignedUrl(path, 60 * 60 * 24);
+  if (signedError || !signedData?.signedUrl) {
+    await supabase.storage.from("memory-photos").remove([path]);
+    throw new Error(signedError?.message ?? "Could not create a photo preview.");
+  }
+
+  return { path, signedUrl: signedData.signedUrl };
+}
+
+export async function removeMemoryPhoto(path: string | null): Promise<void> {
+  if (!path) return;
+  const supabase = await getSupabaseBrowserClient();
+  if (!supabase) return;
+  const { error } = await supabase.storage.from("memory-photos").remove([path]);
   if (error) throw new Error(error.message);
 }
 
