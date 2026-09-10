@@ -24,7 +24,6 @@ function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  // Already signed in and landed here anyway (e.g. a stale bookmark) — go home.
   if (!isPending && user) {
     void navigate({ to: "/" });
     return null;
@@ -38,8 +37,6 @@ function LoginPage() {
     try {
       if (mode === "sign-up") {
         await signUpEmail(email, password, name);
-        // Supabase projects default to "confirm email" on — sign-up doesn't
-        // hand back an active session until the visitor clicks that link.
         setNotice("Check your email to confirm your account, then sign in below.");
         setMode("sign-in");
       } else {
@@ -56,7 +53,7 @@ function LoginPage() {
   async function onGoogle() {
     setError(null);
     try {
-      await signInGoogle("/");
+      await signInGoogle();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't reach Google sign-in.");
     }
