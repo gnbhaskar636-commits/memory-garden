@@ -14,15 +14,6 @@ import type { GardenSettings, Memory, MemoryDraft } from "./types";
 import { getStableMemoryPosition } from "@/lib/world/memory-position";
 import { getMemoryZone } from "@/lib/world/memory-zone";
 
-/**
- * Client-side cache over the server-backed memories + settings.
- *
- * `hydrate()` loads both from the database on mount. Every mutation applies
- * an optimistic update immediately (so the UI feels instant) and fires the
- * matching server function; on failure it reverts and surfaces the error via
- * `lastError` so a component can show a toast/retry.
- */
-
 export const defaultSettings: GardenSettings = {
   theme: "light",
   reducedMotion: false,
@@ -72,6 +63,7 @@ function createLocalMemory(draft: MemoryDraft): Memory {
     mood: draft.mood,
     location: draft.location.trim(),
     photo: draft.photo,
+    photoPath: draft.photoPath,
     favorite: draft.favorite,
     createdAt,
     updatedAt: createdAt,
@@ -95,17 +87,10 @@ export const useMemoryStore = create<GardenState>()((set, get) => ({
   hydrate: () => {
     void Promise.all([listMemories(), getGardenSettings()])
       .then(([memories, settings]) => {
-        set({
-          memories,
-          settings: settings ?? get().settings,
-          hydrated: true,
-        });
+        set({ memories, settings: settings ?? get().settings, hydrated: true });
       })
       .catch((err: unknown) => {
-        set({
-          hydrated: true,
-          lastError: err instanceof Error ? err.message : "Failed to load your garden.",
-        });
+        set({ hydrated: true, lastError: err instanceof Error ? err.message : "Failed to load your garden." });
       });
   },
 
@@ -113,34 +98,10 @@ export const useMemoryStore = create<GardenState>()((set, get) => ({
     const memory = createLocalMemory(draft);
     try {
       const saved = await createMemoryFn({ data: { ...draft, id: memory.id } });
-      set({
-        memories: [saved, ...get().memories],
-        lastError: null,
-      });
+      set({ memories: [saved, ...get().memories], lastError: null });
       return saved;
     } catch (err: unknown) {
-      set({
-        lastError: err instanceof Error ? err.message : "Couldn't save that memory.",
-      });
-      throw err;
-    }
-  },
-
-  /** Wait for server confirmation beforeconsidering the memory saved. */
-  confirmMemory: async (draft: MemoryDraft) => {
-    const memory = createLocalMemory(draft);
-    try {
-      const saved = await createMemoryFn({ data: { ...draft, id: memory.id } });
-      set({
-        memories: get().memories.map((item) => (item.id === saved.id ? saved : item)),
-        lastError: null,
-      });
-      return saved;
-    } catch (err: unknown) {
-      set({
-        memories: get().memories.filter((m) => m.id !== memory.id),
-        lastError: err instanceof Error ? err.message : "Couldn't save that memory.",
-      });
+      set({ lastError: err instanceof Error ? err.message : "Couldn't save that memory." });
       throw err;
     }
   },
@@ -158,6 +119,7 @@ export const useMemoryStore = create<GardenState>()((set, get) => ({
               mood: draft.mood,
               location: draft.location.trim(),
               photo: draft.photo,
+              photoPath: draft.photoPath,
               favorite: draft.favorite,
               markerKind: draft.markerKind ?? memory.markerKind,
               tags: draft.tags,
@@ -173,10 +135,7 @@ export const useMemoryStore = create<GardenState>()((set, get) => ({
       lastError: null,
     });
     void updateMemoryFn({ data: { id, draft } }).catch((err: unknown) => {
-      set({
-        memories: previous,
-        lastError: err instanceof Error ? err.message : "Couldn't save your changes.",
-      });
+      set({ memories: previous, lastError: err instanceof Error ? err.message : "Couldn't save your changes." });
     });
   },
 
@@ -184,10 +143,7 @@ export const useMemoryStore = create<GardenState>()((set, get) => ({
     const previous = get().memories;
     set({ memories: previous.filter((memory) => memory.id !== id), lastError: null });
     void deleteMemoryFn({ data: { id } }).catch((err: unknown) => {
-      set({
-        memories: previous,
-        lastError: err instanceof Error ? err.message : "Couldn't delete that memory.",
-      });
+      set({ memories: previous, lastError: err instanceof Error ? err.message : "Couldn't delete that memory." });
     });
   },
 
@@ -195,17 +151,12 @@ export const useMemoryStore = create<GardenState>()((set, get) => ({
     const previous = get().memories;
     set({
       memories: previous.map((memory) =>
-        memory.id === id
-          ? { ...memory, favorite: !memory.favorite, updatedAt: nowIso() }
-          : memory,
+        memory.id === id ? { ...memory, favorite: !memory.favorite, updatedAt: nowIso() } : memory,
       ),
       lastError: null,
     });
     void toggleFavoriteMemory({ data: { id } }).catch((err: unknown) => {
-      set({
-        memories: previous,
-        lastError: err instanceof Error ? err.message : "Couldn't update that memory.",
-      });
+      set({ memories: previous, lastError: err instanceof Error ? err.message : "Couldn't update that memory." });
     });
   },
 
@@ -214,10 +165,7 @@ export const useMemoryStore = create<GardenState>()((set, get) => ({
     const next = { ...previous, ...patch };
     set({ settings: next, lastError: null });
     void saveGardenSettings({ data: next }).catch((err: unknown) => {
-      set({
-        settings: previous,
-        lastError: err instanceof Error ? err.message : "Couldn't save your settings.",
-      });
+      set({ settings: previous, lastError: err instanceof Error ? err.message : "Couldn't save your settings." });
     });
   },
 
@@ -225,10 +173,7 @@ export const useMemoryStore = create<GardenState>()((set, get) => ({
     const previous = get().memories;
     set({ memories: [], lastError: null });
     void clearMyMemories().catch((err: unknown) => {
-      set({
-        memories: previous,
-        lastError: err instanceof Error ? err.message : "Couldn't clear your garden.",
-      });
+      set({ memories: previous, lastError: err instanceof Error ? err.message : "Couldn't clear your garden." });
     });
   },
 }));
