@@ -14,7 +14,6 @@ import { loadServerEnv } from "@/lib/env.server";
 
 loadServerEnv();
 
-/** Read an env var, treating empty/whitespace as unset. */
 const env = (key: string): string | undefined => {
   const value = process.env[key]?.trim();
   return value ? value : undefined;
@@ -26,18 +25,11 @@ function requiredEnv(key: string): string {
   return value;
 }
 
-/**
- * Supabase has both the older `anon` client key and the newer publishable
- * client key. Accept either so a Vercel project can use the current Supabase
- * naming without making auth appear disabled.
- */
 const supabaseClientKey = (): string | undefined =>
   env("SUPABASE_ANON_KEY") ?? env("SUPABASE_PUBLISHABLE_KEY");
 
-/** True when Supabase Auth is configured server-side. */
 export const authConfigured = Boolean(env("SUPABASE_URL") && supabaseClientKey());
 
-/** Request-scoped Supabase client backed by the visitor's auth cookies. */
 export function createSupabaseServerClient() {
   const url = requiredEnv("SUPABASE_URL");
   const key = supabaseClientKey();
@@ -62,7 +54,14 @@ export function createSupabaseServerClient() {
   });
 }
 
-/** Privileged server-only client for future admin/background jobs. */
+/** Exchange the OAuth authorization code exactly once on the server callback. */
+export async function exchangeOAuthCode(code: string): Promise<void> {
+  if (!authConfigured) throw new Error("Authentication is not configured");
+  const supabase = createSupabaseServerClient();
+  const { error } = await supabase.auth.exchangeCodeForSession(code);
+  if (error) throw new Error(error.message);
+}
+
 export function createSupabaseAdminClient() {
   return createClient(requiredEnv("SUPABASE_URL"), requiredEnv("SUPABASE_SERVICE_ROLE_KEY"), {
     auth: { autoRefreshToken: false, persistSession: false },
