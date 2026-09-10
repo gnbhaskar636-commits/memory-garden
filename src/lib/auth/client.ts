@@ -5,23 +5,41 @@ import { getSupabasePublicConfig } from "./public-config";
 /**
  * Supabase client for this React SPA (browser-side).
  *
- * Talks straight to Supabase's hosted Auth (no same-origin `/api/auth/*`
- * anymore — that only existed because the old setup ran its own auth
- * server). Config is fetched once from `getSupabasePublicConfig()` and the
- * resulting client is memoized for the life of the tab; `null` means
- * Supabase isn't configured (no `SUPABASE_URL/SUPABASE_ANON_KEY`).
+ * OAuth uses an explicit PKCE callback route. We deliberately disable
+ * automatic URL detection here so the OAuth code is exchanged exactly once
+ * by `/auth/callback`, rather than once by the browser client and once by a
+ * server-side callback.
  */
 let clientPromise: Promise<SupabaseClient | null> | null = null;
 
 export function getSupabaseBrowserClient(): Promise<SupabaseClient | null> {
   clientPromise ??= getSupabasePublicConfig().then((config) =>
-    config ? createBrowserClient(config.url, config.anonKey) : null,
+    config
+      ? createBrowserClient(config.url, config.anonKey, {
+          auth: {
+            detectSessionInUrl: false,
+          },
+        })
+      : null,
   );
   return clientPromise;
 }
 
-/** True when this app offers sign-in UI at all (as opposed to being a no-auth app). */
 export const authEnabled = true;
+
+function getOAuthCallbackUrl(): string {
+  // Production must never fall back to the Vite dev origin. Local development
+  // still uses the local origin so developers can run the same callback route.
+  if (typeof window !== "undefined" && window.location.hostname === "memory-garden-theta.vercel.app") {
+    return "https://memory-garden-theta.vercel.app/auth/callback";
+  }
+  if (typeof window !== "undefined" && window.location.hostname.endsWith(".vercel.app")) {
+    return `${window.location.origin}/auth/callback`;
+  }
+  return typeof window !== "undefined"
+    ? `${window.location.origin}/auth/callback`
+    : "https://memory-garden-theta.vercel.app/auth/callback";
+}
 
 export async function signUpEmail(email: string, password: string, name: string): Promise<void> {
   const supabase = await getSupabaseBrowserClient();
@@ -42,13 +60,14 @@ export async function signInEmail(email: string, password: string): Promise<void
 }
 
 /** Redirects to Google's consent screen via Supabase's built-in Google provider. */
-export async function signInGoogle(callbackURL = "/"): Promise<void> {
+export async function signInGoogle(): Promise<void> {
   const supabase = await getSupabaseBrowserClient();
   if (!supabase) throw new Error("Sign-in is not configured");
-  const redirectTo = new URL(callbackURL, window.location.origin).toString();
   const { error } = await supabase.auth.signInWithOAuth({
     provider: "google",
-    options: { redirectTo },
+    options: {
+      redirectTo: getOAuthCallbackUrl(),
+    },
   });
   if (error) throw new Error(error.message);
 }
